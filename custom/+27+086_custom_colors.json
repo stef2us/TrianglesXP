@@ -1,0 +1,22 @@
+{
+    "+27+086": {
+        "Lukla_01": {
+            "brightness": 0,
+            "contrast": 0,
+            "temp": 0,
+            "tint": -20,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Lukla_bordure_EST_02": {
+            "brightness": 0,
+            "contrast": 0,
+            "temp": -30,
+            "tint": -30,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        }
+    }
+}

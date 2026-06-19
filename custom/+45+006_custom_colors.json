@@ -1,0 +1,94 @@
+{
+    "+45+006": {
+        "Savoie_02": {
+            "brightness": 0,
+            "contrast": 0,
+            "temp": 25,
+            "tint": -20,
+            "saturation": -15,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Savoie_04": {
+            "brightness": -5,
+            "contrast": 5,
+            "temp": 20,
+            "tint": 15,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 130
+        },
+        "Savoie_bordure_EST_05": {
+            "brightness": -10,
+            "contrast": 30,
+            "temp": 10,
+            "tint": 10,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 210
+        },
+        "Isere_03": {
+            "brightness": -15,
+            "contrast": 15,
+            "temp": 25,
+            "tint": 10,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Annecy_01": {
+            "brightness": -10,
+            "contrast": 15,
+            "temp": 20,
+            "tint": -25,
+            "saturation": -5,
+            "thresh_b": 30,
+            "thresh_w": 220
+        },
+        "Annecy_01b": {
+            "brightness": -5,
+            "contrast": 15,
+            "temp": 20,
+            "tint": -30,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Annecy_01a": {
+            "brightness": -10,
+            "contrast": 15,
+            "temp": 30,
+            "tint": -10,
+            "saturation": -15,
+            "thresh_b": 20,
+            "thresh_w": 220
+        },
+        "Savoie_02b": {
+            "brightness": 25,
+            "contrast": 15,
+            "temp": 30,
+            "tint": -10,
+            "saturation": -10,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Annecy_01_lac": {
+            "brightness": 0,
+            "contrast": 0,
+            "temp": -10,
+            "tint": 0,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Savoie_02c": {
+            "brightness": 0,
+            "contrast": 0,
+            "temp": 25,
+            "tint": -15,
+            "saturation": -25,
+            "thresh_b": 0,
+            "thresh_w": 220
+        }
+    }
+}

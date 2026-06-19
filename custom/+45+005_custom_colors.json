@@ -1,0 +1,13 @@
+{
+    "+45+005": {
+        "ALL": {
+            "brightness": 5,
+            "contrast": 10,
+            "temp": 25,
+            "tint": -30,
+            "saturation": -10,
+            "thresh_b": 0,
+            "thresh_w": 220
+        }
+    }
+}

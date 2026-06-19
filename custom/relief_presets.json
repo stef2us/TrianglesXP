@@ -1,0 +1,42 @@
+{
+    "Smooth": {
+        "smooth": 2,
+        "chaos_on": false,
+        "subdiv": 0,
+        "octaves": 1,
+        "amp": 10,
+        "scale": 10
+    },
+    "Field": {
+        "smooth": 1,
+        "chaos_on": true,
+        "subdiv": 0,
+        "octaves": 4,
+        "amp": 25,
+        "scale": 150
+    },
+    "Bumpy": {
+        "smooth": 1,
+        "chaos_on": true,
+        "subdiv": 0,
+        "octaves": 3,
+        "amp": 35,
+        "scale": 100
+    },
+    "Rocky": {
+        "smooth": 1,
+        "chaos_on": true,
+        "subdiv": 0,
+        "octaves": 2,
+        "amp": 45,
+        "scale": 65
+    },
+    "Crest": {
+        "smooth": 1,
+        "chaos_on": true,
+        "subdiv": 0,
+        "octaves": 2,
+        "amp": 45,
+        "scale": 40
+    }
+}
