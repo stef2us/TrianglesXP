@@ -1146,7 +1146,7 @@ def build_cdt_input(hole_poly, runway_poly, anchor_segments):
             if idx1 != idx2:  # <-- SÉCURITÉ CRITIQUE ANTI-CRASH CDT
                 segments.append([idx1, idx2])
         else:
-            logging.warning("Ancrage ignoré : point non trouvé dans les contours natifs.")
+            logging.warning("Anchor ignored: point not found in native contours.")
 
     segments_np = np.array(segments, dtype=np.int32)
 
@@ -1217,7 +1217,7 @@ def perform_stitching_cdt(hole_poly, runway_poly, anchor_segments):
 
         local_vertices_3d = np.vstack((local_vertices_3d, new_verts_3d))
 
-        logging.info(f"CDT: {len(new_verts_2d)} point(s) d'intersection de grille résolu(s) et interpolé(s) en 3D.")
+        logging.info(f"CDT: {len(new_verts_2d)} grid intersection points resolved and 3D-interpolated.")
 
     return new_faces_local, local_vertices_3d
 

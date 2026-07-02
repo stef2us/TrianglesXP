@@ -71,7 +71,7 @@ class OrthoMeshViewer(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TrianglesXP 0.27.0")
+        self.setWindowTitle("TrianglesXP 0.27.1")
         self.resize(1280, 800)
 
         # 1. Initialisation de toutes les variables d'état
@@ -1138,9 +1138,9 @@ class OrthoMeshViewer(QMainWindow):
         lbl_area_subdiv = QLabel(_("lbl_bank_precision"))
         lbl_area_subdiv.setFixedWidth(100)
         self.slider_area_subdiv = QSlider(Qt.Horizontal)
-        self.slider_area_subdiv.setRange(self.SMOOTH_LOOPS_MIN, self.SMOOTH_LOOPS_MAX)
+        self.slider_area_subdiv.setRange(1, self.MAX_SUBDIV_LEVEL)
         self.spin_area_subdiv = QSpinBox()
-        self.spin_area_subdiv.setRange(self.SMOOTH_LOOPS_MIN, self.SMOOTH_LOOPS_MAX)
+        self.spin_area_subdiv.setRange(1, self.MAX_SUBDIV_LEVEL)
         self.spin_area_subdiv.setFixedWidth(50)
         self.slider_area_subdiv.valueChanged.connect(self.spin_area_subdiv.setValue)
         self.spin_area_subdiv.valueChanged.connect(self.slider_area_subdiv.setValue)
@@ -1280,9 +1280,9 @@ class OrthoMeshViewer(QMainWindow):
         lbl_runway_subdiv = QLabel(_("lbl_bank_precision"))
         lbl_runway_subdiv.setFixedWidth(100)
         self.slider_runway_subdiv = QSlider(Qt.Horizontal)
-        self.slider_runway_subdiv.setRange(self.SMOOTH_LOOPS_MIN, self.SMOOTH_LOOPS_MAX)
+        self.slider_runway_subdiv.setRange(1, self.MAX_SUBDIV_LEVEL)
         self.spin_runway_subdiv = QSpinBox()
-        self.spin_runway_subdiv.setRange(self.SMOOTH_LOOPS_MIN, self.SMOOTH_LOOPS_MAX)
+        self.spin_runway_subdiv.setRange(1, self.MAX_SUBDIV_LEVEL)
         self.spin_runway_subdiv.setFixedWidth(50)
         self.slider_runway_subdiv.valueChanged.connect(self.spin_runway_subdiv.setValue)
         self.spin_runway_subdiv.valueChanged.connect(self.slider_runway_subdiv.setValue)
@@ -3801,7 +3801,7 @@ class OrthoMeshViewer(QMainWindow):
 
         # On bascule automatiquement la liste sur le préréglage fraîchement créé
         self.combo_presets.setCurrentText(name)
-        # QMessageBox.information(self, _("msg_success_title"), _("msg_relief_preset_saved",cn=name))
+        QMessageBox.information(self, _("msg_success_title"), _("msg_relief_preset_saved",cn=name))
 
     def update_preset_save_button_state(self):
         """Active ou désactive le bouton de sauvegarde selon le preset affiché."""
@@ -4059,85 +4059,132 @@ class OrthoMeshViewer(QMainWindow):
         segments_2d = [(P_user_2d[i], P_user_2d[(i+1)%len(P_user_2d)]) for i in range(len(P_user_2d))]
 
         # =====================================================================
-        logging.info(f"2/5 : Topological subdivision (Subdivs: {subdivs})...")
+        logging.info("2/5 & 3/5 : Adaptive Topological subdivision & Loop extraction...")
         # =====================================================================
-        for step in range(subdivs):
-            # 1. On identifie les sommets dans la Bounding Box
+
+        # 1. SNAPSHOT : On sauvegarde le maillage local pour pouvoir faire des retries propres
+        backup_v = self.original_vertices.copy()
+        backup_u = self.original_uvs.copy()
+        backup_f = self.original_faces.copy()
+        backup_t = self.original_tri_types.copy()
+        backup_l = self.original_tri_levels.copy() if hasattr(self, 'original_tri_levels') else None
+
+        current_subdivs = subdivs
+        success = False
+        final_loops = []
+        hole_f, hole_t, hole_l = None, None, None
+
+        # 2. LA BOUCLE DE RETRY
+        while current_subdivs <= self.MAX_SUBDIV_LEVEL:
+            logging.info(f"-> Attempting geometry cut with subdivs = {current_subdivs}...")
+
+            # A. Restauration de l'état pur du maillage
+            self.original_vertices = backup_v.copy()
+            self.original_uvs = backup_u.copy()
+            self.original_faces = backup_f.copy()
+            self.original_tri_types = backup_t.copy()
+            if backup_l is not None: self.original_tri_levels = backup_l.copy()
+
+            # B. La subdivision (bornée par current_subdivs)
+            for step in range(current_subdivs):
+                v2d = self.original_vertices[:, :2]
+                v_in_bb = (v2d[:, 0] >= min_x) & (v2d[:, 0] <= max_x) & (v2d[:, 1] >= min_y) & (v2d[:, 1] <= max_y)
+
+                f_in_bb_mask = v_in_bb[self.original_faces[:, 0]] | \
+                               v_in_bb[self.original_faces[:, 1]] | \
+                               v_in_bb[self.original_faces[:, 2]]
+                cand_f_global_idx = np.where(f_in_bb_mask)[0]
+                cand_faces = self.original_faces[cand_f_global_idx]
+
+                v0 = self.original_vertices[cand_faces[:, 0]][:, :2]
+                v1 = self.original_vertices[cand_faces[:, 1]][:, :2]
+                v2 = self.original_vertices[cand_faces[:, 2]][:, :2]
+                cand_centers = (v0 + v1 + v2) / 3.0
+
+                r0 = np.linalg.norm(v0 - cand_centers, axis=1)
+                r1 = np.linalg.norm(v1 - cand_centers, axis=1)
+                r2 = np.linalg.norm(v2 - cand_centers, axis=1)
+                max_radius = np.maximum(np.maximum(r0, r1), r2)
+
+                dist_centers = points_to_segments_dist(cand_centers, segments_2d)
+                curr_rad = trans_width * (1.5 - (step / current_subdivs))
+
+                cand_types = self.original_tri_types[cand_f_global_idx]
+                cand_levels = self.original_tri_levels[cand_f_global_idx]
+
+                mask_local = ((dist_centers - max_radius) <= curr_rad) & (cand_types == 0) & \
+                             (cand_levels < self.MAX_SUBDIV_LEVEL)
+
+                candidate_faces_idx = cand_f_global_idx[mask_local].tolist()
+                if not candidate_faces_idx: break
+
+                v, u, f, t, _dummy, cuts, l = subdivide_mesh_selection(
+                    self.original_vertices, self.original_uvs,
+                    self.original_faces, self.original_tri_types,
+                    candidate_faces_idx, self.original_tri_levels,
+                    max_subdiv_level=self.MAX_SUBDIV_LEVEL
+                )
+                if cuts == 0: break
+                self.original_vertices, self.original_uvs, self.original_faces, self.original_tri_types, self.original_tri_levels = v, u, f, t, l
+
+            # C. Extraction de la clearance area
             v2d = self.original_vertices[:, :2]
-            v_in_bb = (v2d[:, 0] >= min_x) & (v2d[:, 0] <= max_x) & (v2d[:, 1] >= min_y) & (v2d[:, 1] <= max_y)
-            # v_idx_in_bb = np.where(v_in_bb)[0] (On n'a plus besoin de v_idx_in_bb)
+            mask_v_bb = (v2d[:, 0] >= min_x) & (v2d[:, 0] <= max_x) & (v2d[:, 1] >= min_y) & (v2d[:, 1] <= max_y)
+            dist_v = np.full(len(self.original_vertices), np.inf)
+            cand_v_idx = np.where(mask_v_bb)[0]
+            if len(cand_v_idx) > 0:
+                dist_v[cand_v_idx] = points_to_segments_dist(v2d[cand_v_idx], segments_2d)
 
-            # 2. OPTIMISATION : Indexation booléenne directe
-            f_in_bb_mask = v_in_bb[self.original_faces[:, 0]] | \
-                           v_in_bb[self.original_faces[:, 1]] | \
-                           v_in_bb[self.original_faces[:, 2]]
+            faces_to_del = np.any(dist_v[self.original_faces] < 3.0, axis=1)
 
-            cand_f_global_idx = np.where(f_in_bb_mask)[0]
-            cand_faces = self.original_faces[cand_f_global_idx]
+            f_centers = np.mean(self.original_vertices[self.original_faces][:, :, :2], axis=1)
+            mask_f_bb = (f_centers[:, 0] >= min_x) & (f_centers[:, 0] <= max_x) & (f_centers[:, 1] >= min_y) & (f_centers[:, 1] <= max_y)
+            cand_f_idx = np.where(mask_f_bb)[0]
+            if len(cand_f_idx) > 0:
+                intersect_mask = faces_intersecting_polygon(self.original_vertices, self.original_faces[cand_f_idx], P_user_2d)
+                faces_to_del[cand_f_idx] |= intersect_mask
 
-            # 3. ON CALCULE LES CENTRES UNIQUEMENT SUR CE PETIT ÉCHANTILLON
-            cand_centers = np.mean(self.original_vertices[cand_faces][:, :, :2], axis=1)
-            dist_centers = points_to_segments_dist(cand_centers, segments_2d)
-            curr_rad = trans_width * (1.5 - (step / subdivs))
+            # Sécurité conflits (routes, eau...)
+            if np.any(self.original_tri_types[faces_to_del] > 0):
+                logging.warning("Type conflict detected in area to delete.")
+                break # Échec total, on arrête les tentatives
 
-            # 4. Évaluation du masque sur l'échantillon
-            cand_types = self.original_tri_types[cand_f_global_idx]
-            cand_levels = self.original_tri_levels[cand_f_global_idx]
+           # D. Test des boucles Topologiques
+            del_f = self.original_faces[faces_to_del]
+            loops, is_valid = self.get_all_loops(del_f)
 
-            mask_local = (dist_centers <= curr_rad) & (cand_types == 0) & \
-                         (cand_levels < self.MAX_SUBDIV_LEVEL)
+            # E. Verdict de la tentative : La vision de l'anneau (2 boucles strictes)
+            if is_valid and len(loops) == 2:
+                logging.info(f"Success ! Clean topology (2 loops) achieved with subdivs = {current_subdivs}.")
+                success = True
+                final_loops = loops
+                hole_f = self.original_faces[~faces_to_del]
+                hole_t = self.original_tri_types[~faces_to_del]
+                hole_l = self.original_tri_levels[~faces_to_del]
+                break # On sort de la boucle while, tout est parfait !
+            else:
+                logging.info(f"Topology failed (Valid: {is_valid}, Loops count: {len(loops)}). Incrementing subdivs.")
+                current_subdivs += 1
 
-            # 5. On repasse en index globaux pour la fonction de subdivision
-            candidate_faces_idx = cand_f_global_idx[mask_local].tolist()
+        # 3. GESTION DE L'ÉCHEC ABSOLU
+        if not success:
+            QMessageBox.warning(self, _("msg_action_denied"), "Create bigger polygon")
 
-            if not candidate_faces_idx: break
-            v, u, f, t, _dummy, cuts, l = subdivide_mesh_selection(self.original_vertices, self.original_uvs,
-                                                            self.original_faces, self.original_tri_types,
-                                                            candidate_faces_idx, self.original_tri_levels,
-                                                            max_subdiv_level = self.MAX_SUBDIV_LEVEL)
-            if cuts == 0: break
-            self.original_vertices, self.original_uvs, self.original_faces, self.original_tri_types, self.original_tri_levels = v, u, f, t, l
-
-        # =====================================================================
-        logging.info("3/5 : Extraction of loops and clearance area...")
-        # =====================================================================
-        v2d = self.original_vertices[:, :2]
-        mask_v_bb = (v2d[:, 0] >= min_x) & (v2d[:, 0] <= max_x) & (v2d[:, 1] >= min_y) & (v2d[:, 1] <= max_y)
-        dist_v = np.full(len(self.original_vertices), np.inf)
-        cand_v_idx = np.where(mask_v_bb)[0]
-        if len(cand_v_idx) > 0:
-            dist_v[cand_v_idx] = points_to_segments_dist(v2d[cand_v_idx], segments_2d)
-
-        faces_to_del = np.any(dist_v[self.original_faces] < 3.0, axis=1)
-        # Check intersections (optimisé BB)
-        f_centers = np.mean(self.original_vertices[self.original_faces][:, :, :2], axis=1)
-        mask_f_bb = (f_centers[:, 0] >= min_x) & (f_centers[:, 0] <= max_x) & (f_centers[:, 1] >= min_y) & (f_centers[:, 1] <= max_y)
-        cand_f_idx = np.where(mask_f_bb)[0]
-        if len(cand_f_idx) > 0:
-            intersect_mask = faces_intersecting_polygon(self.original_vertices, self.original_faces[cand_f_idx], P_user_2d)
-            faces_to_del[cand_f_idx] |= intersect_mask
-
-        # SÉCURITÉ : Vérification des conflits de type
-        if np.any(self.original_tri_types[faces_to_del] > 0):
-            QMessageBox.warning(self, _("msg_action_denied"), _("msg_operation_canceled_the_ro"))
-
-            # Simulation d'un CTRL+Z pour annuler les subdivisions de l'étape 2
+            # Rollback avec l'undo stack
             if self.undo_stack:
                 previous_state = self.undo_stack.pop()
                 self.restore_state(previous_state['data'])
-                self.redo_stack.clear() # Nettoyage du buffer futur
+                self.redo_stack.clear()
                 self.update_undo_redo_buttons()
                 self.update_pivot_z()
 
-            # Réinitialisation de l'UI
             self.btn_toggle_zone.setChecked(False)
             self.toggle_zone_mode()
             return
 
-        hole_f, hole_t, hole_l = self.original_faces[~faces_to_del], self.original_tri_types[~faces_to_del], self.original_tri_levels[~faces_to_del]
-        del_f = self.original_faces[faces_to_del]
-
+        # =====================================================================
         # Calcul UVs par IDW (accéléré)
+        # =====================================================================
         local_v_mask = (self.original_vertices[:, 0] >= min_x) & (self.original_vertices[:, 0] <= max_x) & \
                        (self.original_vertices[:, 1] >= min_y) & (self.original_vertices[:, 1] <= max_y)
         loc_v = self.original_vertices[local_v_mask]
@@ -4151,21 +4198,29 @@ class OrthoMeshViewer(QMainWindow):
 
         offset = len(self.original_vertices)
         P_user_idx = list(range(offset, offset + len(P_user_3d)))
+
+        # Application finale des matrices saines (issues du succès)
         self.original_vertices = np.vstack((self.original_vertices, P_user_3d))
         self.original_uvs = np.vstack((self.original_uvs, P_user_uvs))
-        self.original_faces, self.original_tri_types, self.original_tri_levels = hole_f, hole_t, hole_l
+        self.original_faces = hole_f
+        self.original_tri_types = hole_t
+        self.original_tri_levels = hole_l
 
         # =====================================================================
-        # Triangulation
         logging.info("4/5 : CDT Triangulation...")
         # =====================================================================
-        loops = self.get_all_loops(del_f) # Utilise la petite fonction locale ou une méthode de classe
-        for loop in loops:
+        # On a exactement 2 boucles dans final_loops. Il faut juste les trier.
+        for loop in final_loops:
+            # On prend 5 points au hasard sur la boucle pour tester
             pts_check = self.original_vertices[loop[:5], :2]
-            if np.sum(points_in_polygons_concave(pts_check, [P_user_2d])) > len(pts_check)/2:
-                self.do_cdt_local(P_user_idx, loop, grid_xs, grid_ys) # Intérieur
+
+            # Si la majorité de ces points est à l'intérieur du polygone utilisateur
+            if np.sum(points_in_polygons_concave(pts_check, [P_user_2d])) > len(pts_check) / 2:
+                # C'est la boucle intérieure (le trou du plateau)
+                self.do_cdt_local(P_user_idx, loop, grid_xs, grid_ys)
             else:
-                self.do_cdt_local(loop, P_user_idx, grid_xs, grid_ys) # Extérieur
+                # C'est la boucle extérieure
+                self.do_cdt_local(loop, P_user_idx, grid_xs, grid_ys)
 
         # =====================================================================
         logging.info("5/5 : Final selection...")
@@ -4197,28 +4252,60 @@ class OrthoMeshViewer(QMainWindow):
         edge_counts = {}
         for f in f_subset:
             edges = [tuple(sorted((f[0], f[1]))), tuple(sorted((f[1], f[2]))), tuple(sorted((f[2], f[0])))]
-            for e in edges: edge_counts[e] = edge_counts.get(e, 0) + 1
+            for e in edges:
+                edge_counts[e] = edge_counts.get(e, 0) + 1
+
+        # 1. Utiliser une liste d'adjacence pour supporter les sommets partagés (pincements)
         adjacency = {}
         for f in f_subset:
             edges = [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])]
             for e in edges:
                 if edge_counts[tuple(sorted(e))] == 1:
-                    # SÉCURITÉ : Ne pas écraser une connexion si elle existe (Évite le crash sur les pincements en '8')
                     if e[0] not in adjacency:
-                        adjacency[e[0]] = e[1]
+                        adjacency[e[0]] = []
+                    adjacency[e[0]].append(e[1])
+
+        # NOUVEAU : On vérifie si un sommet possède plus d'une arête sortante (Pincement)
+        is_topology_valid = True
+        for node, targets in adjacency.items():
+            if len(targets) > 1:
+                is_topology_valid = False
+                logging.warning(f"Topological pinch detected at vertex {node} (Degree: {len(targets)}).")
+                break
+
         loops = []
-        unvisited = set(adjacency.keys())
-        while unvisited:
-            start_node = next(iter(unvisited))
-            curr_loop = [start_node]
-            curr_node = adjacency[start_node]
-            unvisited.remove(start_node)
-            while curr_node != start_node and curr_node is not None:
-                curr_loop.append(curr_node)
-                if curr_node in unvisited: unvisited.remove(curr_node)
-                curr_node = adjacency.get(curr_node)
-            loops.append(curr_loop)
-        return loops
+
+        # 2. Extraction robuste des cycles simples (Ton code intact)
+        while adjacency:
+            start_node = next(iter(adjacency.keys()))
+            path = []
+            curr = start_node
+
+            while True:
+                path.append(curr)
+
+                if curr not in adjacency or not adjacency[curr]:
+                    break
+
+                nxt = adjacency[curr].pop(0)
+                if not adjacency[curr]:
+                    del adjacency[curr]
+
+                if nxt in path:
+                    idx = path.index(nxt)
+                    loop = path[idx:]
+                    loops.append(loop)
+
+                    path = path[:idx]
+                    curr = nxt
+
+                    if not path and (curr not in adjacency or not adjacency[curr]):
+                        break
+                else:
+                    curr = nxt
+
+        # NOUVEAU : On renvoie les boucles ET le statut
+        return loops, is_topology_valid
 
     def do_cdt_local(self, polyA_indices, polyB_indices, grid_xs, grid_ys):
         polyA = self.original_vertices[polyA_indices]
@@ -4581,7 +4668,7 @@ class OrthoMeshViewer(QMainWindow):
                 json.dump(data, f, indent=4, ensure_ascii=False)
             self.current_zone_name = name
             self.current_zone_name_input.setText(name)
-            # QMessageBox.information(self, _("msg_success_title"), _("msg_area_saved",cn=name))
+            QMessageBox.information(self, _("msg_success_title"), _("msg_area_saved",cn=name))
         except Exception as e:
             QMessageBox.critical(self, _("msg_error_title"), _("msg_json_write_error", error=e))
 
@@ -5090,26 +5177,45 @@ class OrthoMeshViewer(QMainWindow):
             cand_f_global_idx = np.where(f_in_bb_mask)[0]
             cand_faces = self.original_faces[cand_f_global_idx]
 
-            # 2. Maths localisées
-            cand_centers = np.mean(self.original_vertices[cand_faces][:, :, :2], axis=1)
+            # 2. Maths localisées : Centres et rayons des triangles
+            v0 = self.original_vertices[cand_faces[:, 0]][:, :2]
+            v1 = self.original_vertices[cand_faces[:, 1]][:, :2]
+            v2 = self.original_vertices[cand_faces[:, 2]][:, :2]
+
+            cand_centers = (v0 + v1 + v2) / 3.0
+
+            # Rayon englobant pour attraper les triangles périphériques
+            r0 = np.linalg.norm(v0 - cand_centers, axis=1)
+            r1 = np.linalg.norm(v1 - cand_centers, axis=1)
+            r2 = np.linalg.norm(v2 - cand_centers, axis=1)
+            max_radius = np.maximum(np.maximum(r0, r1), r2)
+
             ap_centers = cand_centers - p1
             t_centers = np.dot(ap_centers, line_dir) / line_len if line_len > 0 else np.zeros(len(cand_centers))
             proj_centers = p1 + np.outer(t_centers * line_len, line_dir)
             dist_lat_centers = np.linalg.norm(cand_centers - proj_centers, axis=1)
 
+            # CORRECTION : Marge de tolérance dynamique basée sur la taille du triangle
+            t_margin_array = max_radius / line_len if line_len > 0 else np.zeros(len(cand_centers))
+            effective_dist_lat = dist_lat_centers - max_radius
+
             mask_local = np.zeros(len(cand_centers), dtype=bool)
 
             # Évaluation pour la Piste et Talus
             if step < subdivs_runway:
-                mask_runway = (t_centers >= 0.0) & (t_centers <= 1.0) & (dist_lat_centers <= (width / 2.0))
+                # Piste (prise en compte de la taille du triangle sur les axes X et Y)
+                mask_runway = (t_centers >= -t_margin_array) & (t_centers <= 1.0 + t_margin_array) & (effective_dist_lat <= (width / 2.0))
                 mask_local |= mask_runway
 
                 current_width = total_width * (1.5 - (step / subdivs_runway)) if subdivs_runway > 0 else total_width
-                mask_bank = (t_centers >= -margin_t) & (t_centers <= 1.0 + margin_t) & (dist_lat_centers <= current_width)
 
-                # Exclure l'intérieur de la piste pour éviter de sur-subdiviser le centre
+                # Talus
+                mask_bank = (t_centers >= -(margin_t + t_margin_array)) & (t_centers <= 1.0 + margin_t + t_margin_array) & (effective_dist_lat <= current_width)
+
+                # Exclusion du centre (On garde la distance stricte ici pour ne pas exclure à tort la périphérie de la piste)
                 mask_runway_interior = (t_centers >= 0.0) & (t_centers <= 1.0) & (dist_lat_centers <= (width / 2.0))
                 mask_bank &= ~mask_runway_interior
+
                 mask_local |= mask_bank
 
             # Filtres de sécurité globaux
@@ -5749,7 +5855,7 @@ class OrthoMeshViewer(QMainWindow):
                 json.dump(data, f, indent=4, ensure_ascii=False)
             self.current_runway_name = name
             self.current_runway_name_input.setText(name)
-            # QMessageBox.warning(self, _("msg_success_title"), _("msg_runway_saved", rnw_name=name, rnw_tile=tile_id))
+            QMessageBox.warning(self, _("msg_success_title"), _("msg_runway_saved", rnw_name=name, rnw_tile=tile_id))
         except Exception as e:
             QMessageBox.critical(self, _("msg_error_title"), _("msg_json_write_error", error=str(e)))
 
@@ -6738,7 +6844,7 @@ class OrthoMeshViewer(QMainWindow):
         try:
             with open(json_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            # QMessageBox.information(self, _("msg_success_title"), _("msg_selection_saved", cn=name))
+            QMessageBox.information(self, _("msg_success_title"), _("msg_selection_saved", cn=name))
             self.set_selection_state(name=name, modified=False)
         except Exception as e:
             QMessageBox.critical(self, _("msg_error_title"), _("msg_json_write_error", error=e))
@@ -7862,7 +7968,7 @@ class OrthoMeshViewer(QMainWindow):
         # 5. Sauvegarde physique
         try:
             cv2.imwrite(filepath, export_img)
-            # QMessageBox.information(self, _("msg_success_title"), _("msg_texture_saved", tn=safe_suffix))
+            QMessageBox.information(self, _("msg_success_title"), _("msg_texture_saved", tn=safe_suffix))
         except Exception as e:
             QMessageBox.critical(self, _("msg_error_title"), _("msg_write_error", error=str(e)))
 
