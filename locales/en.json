@@ -284,5 +284,17 @@
     "group_type_mod": "Triangle Attributes",
     "btn_convert_type": "⚠️ Convert to Terrain",
     "msg_no_type_to_convert": "No convertible triangle found in the current selection.",
-    "msg_tri_converted": "{tris} triangles converted to terrain type"
+    "msg_tri_converted": "{tris} triangles converted to terrain type",
+    "group_tilted_plane": "Tilted plane",
+    "btn_def_ab": "Define AB axis",
+    "lbl_alt_A": "Altitude point A:",
+    "lbl_alt_B": "Altitude point B:",
+    "lbl_rot_A": "Rotation A (°):",
+    "lbl_rot_B": "Rotation B (°):",
+    "lbl_AB_axis": "Axis defined",
+    "lbl_AB_ctrl": "CTRL+Clic for A and B",
+    "lbl_AB_define": "Define AB axis",
+    "lbl_AB_restored": "Axis restored",
+    "msg_plz_define_AB": "Please define points A and B",
+    "chk_allow_destr": "Allow to destroy any triangle type"
 }
