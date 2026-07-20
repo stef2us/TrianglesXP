@@ -36,6 +36,8 @@ from logging.handlers import RotatingFileHandler
 
 from concurrent.futures import ThreadPoolExecutor
 
+from enum import Enum, auto
+
 from i18n import load_language, _
 from texture_utils import meters_to_latlon, find_best_texture_match, get_texture_grid_lines
 from mesh_io import parse_ortho_mesh, write_ortho_mesh
@@ -61,6 +63,16 @@ def wait_cursor(func):
             QApplication.restoreOverrideCursor()
     return wrapper
 
+# 0.28.3
+class FlattenPhase(Enum):
+    INACTIVE = 0
+    PHASE_0_INIT = 1       # Mode activé, attente du 1er point
+    PHASE_1_DRAWING = 2    # Tracé du polygone en cours
+    PHASE_2_CLOSED = 3     # Polygone fermé
+    PHASE_3_PT_A = 4       # Plan incliné : Point A défini
+    PHASE_4_PT_B = 5       # Plan incliné : Point B défini
+    PHASE_5_FLATTENING = 6 # Polygone validé, plateau actif
+
 class OrthoMeshViewer(QMainWindow):
 
     # =========================================================================
@@ -71,7 +83,7 @@ class OrthoMeshViewer(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TrianglesXP 0.28.2")
+        self.setWindowTitle("TrianglesXP 0.28.8")
         self.resize(1280, 800)
 
         # 1. Initialisation de toutes les variables d'état
@@ -127,6 +139,7 @@ class OrthoMeshViewer(QMainWindow):
         self.MAX_TEXTURES = 4
 
         self.MAX_SUBDIV_LEVEL = 4
+        self.BANK_Z_FREEZE_MASK = 27
         self.FLATTEN_BANK = 100
         self.ZONE_SUBDIV = 2
         self.RUNWAY_MAX_PTS = 7
@@ -218,7 +231,9 @@ class OrthoMeshViewer(QMainWindow):
         self.zone_polygon_visual = None
         self.zone_markers_visual = None
         self.current_zone_name = ""
-        self.current_runway_name = ""
+        self.current_flatten_phase = FlattenPhase.INACTIVE
+        self.tilted_redo_stack = []
+        self.zone_draw_mode = False
 
         # Cylinder Tool
         self.cylinder_active = False
@@ -231,6 +246,7 @@ class OrthoMeshViewer(QMainWindow):
         self.runway_active = False
         self.runway_pts_2d = []
         self.runway_visuals = []
+        self.current_runway_name = ""
 
         # Mode Retouche 2D
         self.image_2d_visual = None
@@ -342,6 +358,7 @@ class OrthoMeshViewer(QMainWindow):
                 if 'Tools' in self.config:
                     t = self.config['Tools']
                     self.MAX_SUBDIV_LEVEL = int(t.get('max_subdiv_level', '4'))
+                    self.BANK_Z_FREEZE_MASK = int(t.get('bank_z_freeze_mask', '27'))
                     self.FLATTEN_BANK = int(t.get('flatten_bank', '100'))
                     self.ZONE_SUBDIV = int(t.get('zone_subdiv', '2'))
 
@@ -446,6 +463,7 @@ class OrthoMeshViewer(QMainWindow):
         # Tools
         t = self.config['Tools']
         t['max_subdiv_level'] = str(self.MAX_SUBDIV_LEVEL)
+        t['bank_z_freeze_mask'] = str(self.BANK_Z_FREEZE_MASK)
         t['flatten_bank'] = str(self.FLATTEN_BANK)
         t['zone_subdiv'] = str(self.ZONE_SUBDIV)
 
@@ -1126,6 +1144,15 @@ class OrthoMeshViewer(QMainWindow):
         self.btn_toggle_zone.clicked.connect(self.toggle_zone_mode)
         layout_zone.addWidget(self.btn_toggle_zone)
 
+        # 0.28.1 - autoriser destruction tous types de triangles
+        self.cb_allow_destroy_all_types = QCheckBox(_("chk_allow_destr"))
+        layout_zone.addWidget(self.cb_allow_destroy_all_types)
+
+        # 0.28.6
+        self.cb_apply_type_8 = QCheckBox(_("chk_apply_type_8"))
+        self.cb_apply_type_8.setChecked(True) # Vrai par défaut
+        layout_zone.addWidget(self.cb_apply_type_8)
+
         layout_talus = QHBoxLayout()
         layout_talus.addWidget(QLabel(_("lbl_bank_size")))
         self.flatten_trans_input = QLineEdit(str(self.FLATTEN_BANK))
@@ -1157,7 +1184,7 @@ class OrthoMeshViewer(QMainWindow):
         self.group_tilted_plane.toggled.connect(self.on_tilted_plane_toggled)
         layout_tilted = QVBoxLayout()
 
-        self.btn_def_ab = QPushButton(_("btn_def_ab"))
+        self.btn_def_ab = QPushButton(_("lbl_AB_disabled"))
         self.btn_def_ab.setCheckable(True)
         self.btn_def_ab.setStyleSheet("background-color: #188034; color: white; font-weight: bold;")
         self.btn_def_ab.clicked.connect(self.toggle_define_ab_mode)
@@ -1243,10 +1270,6 @@ class OrthoMeshViewer(QMainWindow):
         btn_layout_step1.addWidget(self.btn_apply_zone)
         btn_layout_step1.addWidget(self.btn_cancel_zone)
         layout_zone.addLayout(btn_layout_step1)
-
-        # 0.28.1 - autoriser destruction tous types de triangles
-        self.cb_allow_destroy_all_types = QCheckBox(_("chk_allow_destr"))
-        layout_zone.addWidget(self.cb_allow_destroy_all_types)
 
         group_zone.setLayout(layout_zone)
         parent_layout.addWidget(group_zone)
@@ -1949,67 +1972,35 @@ class OrthoMeshViewer(QMainWindow):
             # --- SÉCURITÉ ANTI-CRASH ---
             return
 
-        # --- MODE 3D : DÉCOUPE DE ZONE (Polygone avec Control) ---
-        if getattr(self, 'zone_draw_mode', False) and 'Control' in [m.name for m in event.modifiers]:
-            # Vérification de l'état du polygone
-            is_closed = len(self.zone_polygon_points) >= 4 and (self.zone_polygon_points[0] == self.zone_polygon_points[-1])
-            if is_closed:
-                return
-
+        # --- MODE 3D : DÉCOUPE DE ZONE ET APLANISSEMENT (FSM) --- 0.28.3
+        if self.current_flatten_phase != FlattenPhase.INACTIVE and 'Control' in [m.name for m in event.modifiers]:
             if abs(abs(self.view.camera.elevation) - 90) > 5:
                 QMessageBox.warning(self, _("msg_warning_title"), _("msg_cam_90"))
                 return
 
-            # On fige la caméra
             self.view.camera.interactive = False
 
-            if event.button == 1: # Clic Gauche
-                # Itération 1 : Raycast vers l'altitude du centre de l'écran
-                target_z = self.view.camera.center[2]
-                wx, wy = self._get_world_xy_from_canvas(event.pos[0], event.pos[1], target_z)
-                ground_z = self.get_z_at_xy(wx, wy)
-
-                # Itération 2 : Raycast CORRIGÉ vers l'altitude réelle du sol (Annule la parallaxe)
-                wx_exact, wy_exact = self._get_world_xy_from_canvas(event.pos[0], event.pos[1], ground_z)
-                # --- SÉCURITÉ ---
-                if not self.is_xy_strictly_inside_mesh(wx_exact, wy_exact):
-                    logging.warning("Outside mesh limits")
-                    return
-                ground_z_exact = self.get_z_at_xy(wx_exact, wy_exact)
-
-                self.zone_polygon_points.append([wx_exact, wy_exact, ground_z_exact])
-                self.zone_polygon_redo_stack.clear()
-                self.update_zone_polygon_visual()
-
-            elif event.button == 2: # Clic Droit : Fermer le tracé visuellement
-                if len(self.zone_polygon_points) >= 3:
-                    first_point = self.zone_polygon_points[0]
-                    self.zone_polygon_points.append(first_point)
-                    self.zone_polygon_redo_stack.clear()
-                    self.update_zone_polygon_visual()
-
-            event.handled = True
-            return
-
-        # 0.28.0 - MODE : DÉFINITION AXE PLAN INCLINÉ
-        if getattr(self, 'tilted_define_active', False) and event.button == 1 and 'Control' in [m.name for m in event.modifiers]:
-            self.view.camera.interactive = False
-
+            # Double Raycast pour précision altimétrique
             target_z = self.view.camera.center[2]
             wx, wy = self._get_world_xy_from_canvas(event.pos[0], event.pos[1], target_z)
             ground_z = self.get_z_at_xy(wx, wy)
             wx_exact, wy_exact = self._get_world_xy_from_canvas(event.pos[0], event.pos[1], ground_z)
 
-            self.tilted_pts_2d.append(np.array([wx_exact, wy_exact, ground_z]))
+            if not self.is_xy_strictly_inside_mesh(wx_exact, wy_exact):
+                logging.warning("Outside mesh limits")
+                return
+            ground_z_exact = self.get_z_at_xy(wx_exact, wy_exact)
 
-            if len(self.tilted_pts_2d) == 1:
-                self.draw_temp_tilted_marker(wx_exact, wy_exact, ground_z)
-            elif len(self.tilted_pts_2d) == 2:
-                self.clear_temp_tilted_marker()
-                self.btn_def_ab.setChecked(False)
-                self.tilted_define_active = False
-                self.btn_def_ab.setText(_("lbl_AB_axis"))
-                self.init_tilted_plane_logic()
+            # Aiguillage selon la phase active
+            if self.current_flatten_phase in (FlattenPhase.PHASE_0_INIT, FlattenPhase.PHASE_1_DRAWING):
+                if event.button == 1:
+                    self._add_polygon_point(wx_exact, wy_exact, ground_z_exact)
+                elif event.button == 2:
+                    self._close_polygon()
+
+            elif self.current_flatten_phase in (FlattenPhase.PHASE_2_CLOSED, FlattenPhase.PHASE_3_PT_A):
+                if self.group_tilted_plane.isChecked() and self.btn_def_ab.isChecked() and event.button == 1:
+                    self._add_tilted_point(wx_exact, wy_exact, ground_z_exact)
 
             event.handled = True
             return
@@ -2382,7 +2373,9 @@ class OrthoMeshViewer(QMainWindow):
             self.pivot_line = scene.visuals.Line(pos=line_coords, color='cyan', width=4, parent=self.view.scene)
 
             self.pivot_marker = scene.visuals.Markers(parent=self.view.scene)
-            self.pivot_marker.set_data(pos=np.array([[0, 0, z_center]]), face_color='red', edge_color='white', size=12)
+            self.pivot_marker.set_data(pos=np.array([[0, 0, z_center]]), face_color='red', edge_color='white', size=20)
+            # 0.28.4
+            self.pivot_marker.set_gl_state(depth_test=True, depth_func='lequal', blend=True)
 
             # --- CRÉATION DES MARQUEURS D'AÉROPORTS ---
             airport_centers = get_airport_centers(self.original_vertices, self.original_faces, self.original_tri_types)
@@ -2674,7 +2667,7 @@ class OrthoMeshViewer(QMainWindow):
 
         # 4. Mise à jour des repères visuels (Point et Ligne)
         if hasattr(self, 'pivot_marker') and hasattr(self, 'pivot_line'):
-            self.pivot_marker.set_data(pos=np.array([center]), face_color='red', edge_color='white', size=12)
+            self.pivot_marker.set_data(pos=np.array([center]), face_color='red', edge_color='white', size=20)
 
             line_coords = np.array([
                 [center[0], center[1], getattr(self, 'z_min', -2000) - 2000],
@@ -2987,9 +2980,11 @@ class OrthoMeshViewer(QMainWindow):
                 logging.info("Nothing to undo in 2D mode.")
             return
 
-        # Interception pour le lasso 3D
-        if getattr(self, 'zone_draw_mode', False):
-            if getattr(self, 'zone_polygon_points', []):
+        # 0.28.3- Interception pour l'Aplanissement (Lasso 3D et Plan Incliné)
+        if self.current_flatten_phase != FlattenPhase.INACTIVE:
+            if self.current_flatten_phase in (FlattenPhase.PHASE_3_PT_A, FlattenPhase.PHASE_4_PT_B):
+                self.undo_tilted_point()
+            elif getattr(self, 'zone_polygon_points', []):
                 self.undo_zone_point()
             return
 
@@ -3241,7 +3236,6 @@ class OrthoMeshViewer(QMainWindow):
             self.btn_toggle_cylinder.setText(_("txt_deactiv_selection"))
             self.update_cylinder_geometry()
 
-            # self.pulse_timer.start(500)
             self.group_cylinder.setStyleSheet("""
                 QGroupBox {
                     border: 2px solid #e67e22;
@@ -3362,8 +3356,6 @@ class OrthoMeshViewer(QMainWindow):
         self.btn_apply_sel.setEnabled(False)
         self.btn_cancel_cyl.setEnabled(False)
 
-        # self.btn_toggle_cylinder.setStyleSheet("background-color: #34495e; color: white; font-weight: bold; padding: 6px;")
-        # self.check_stop_pulse()
         self.group_cylinder.setStyleSheet("")
 
         self.canvas.native.setFocus()
@@ -3907,11 +3899,9 @@ class OrthoMeshViewer(QMainWindow):
     # --- Zone Complexe & Aplanissement ---
 
     def toggle_zone_mode(self):
-        self.zone_draw_mode = self.btn_toggle_zone.isChecked()
-        self.flatten_trans_input.setEnabled(self.zone_draw_mode)
-
-        if self.zone_draw_mode:
-            self.group_tilted_plane.setEnabled(True)
+        # 0.28.3
+        if self.btn_toggle_zone.isChecked():
+            self.set_flatten_phase(FlattenPhase.PHASE_0_INIT)
             self.btn_toggle_zone.setText(_("txt_deactiv_area"))
             self.cancel_selection()
             self.pulse_timer.start(500)
@@ -3922,6 +3912,7 @@ class OrthoMeshViewer(QMainWindow):
                 if i != 2:
                     self.tabs.setTabEnabled(i, False)
         else:
+            self.set_flatten_phase(FlattenPhase.INACTIVE)
             self.btn_toggle_zone.setText(_("txt_activ_area"))
 
             # Sécurité : Si on quitte l'outil alors que l'étape 2 (Aplanissement) est en attente
@@ -3953,7 +3944,7 @@ class OrthoMeshViewer(QMainWindow):
 
         pts_3d = np.array(self.zone_polygon_points)
         # On surélève légèrement pour éviter le Z-fighting avec le maillage
-        pts_3d[:, 2] += 15.0
+        pts_3d[:, 2] += 1.0
 
         # 1. Tracé cyan de la bordure
         if len(pts_3d) >= 2:
@@ -4254,19 +4245,36 @@ class OrthoMeshViewer(QMainWindow):
                 logging.warning("Type conflict detected in area to delete.")
                 break # Échec total, on arrête les tentatives
 
-           # D. Test des boucles Topologiques
+            # D. Test des boucles Topologiques
             del_f = self.original_faces[faces_to_del]
             loops, is_valid = self.get_all_loops(del_f)
 
-            # E. Verdict de la tentative : La vision de l'anneau (2 boucles strictes)
+            # E. Verdict de la tentative : La vision de l'anneau (2 boucles strictes + Validation Géométrique)
             if is_valid and len(loops) == 2:
-                logging.info(f"Success ! Clean topology (2 loops) achieved with subdivs = {current_subdivs}.")
-                success = True
-                final_loops = loops
-                hole_f = self.original_faces[~faces_to_del]
-                hole_t = self.original_tri_types[~faces_to_del]
-                hole_l = self.original_tri_levels[~faces_to_del]
-                break # On sort de la boucle while, tout est parfait !
+                # --- 0.28.7 TEST STRICT : Vérification topologique de l'anneau ---
+                loop1_pts = self.original_vertices[loops[0], :2]
+                loop2_pts = self.original_vertices[loops[1], :2]
+
+                # Calcul du ratio de points à l'intérieur du tracé utilisateur pour chaque boucle
+                in_loop1_ratio = np.sum(points_in_polygons_concave(loop1_pts, [P_user_2d])) / len(loop1_pts)
+                in_loop2_ratio = np.sum(points_in_polygons_concave(loop2_pts, [P_user_2d])) / len(loop2_pts)
+
+                # Un anneau valide (donut) possède OBLIGATOIREMENT :
+                # - 1 boucle "île" (majoritairement à l'intérieur du polygone, ratio > 0.5)
+                # - 1 boucle "trou extérieur" (majoritairement à l'extérieur du polygone, ratio < 0.5)
+                is_true_annulus = (in_loop1_ratio > 0.5 and in_loop2_ratio < 0.5) or (in_loop1_ratio < 0.5 and in_loop2_ratio > 0.5)
+
+                if is_true_annulus:
+                    logging.info(f"Success ! Clean topology (2 loops) achieved with subdivs = {current_subdivs}.")
+                    success = True
+                    final_loops = loops
+                    hole_f = self.original_faces[~faces_to_del]
+                    hole_t = self.original_tri_types[~faces_to_del]
+                    hole_l = self.original_tri_levels[~faces_to_del]
+                    break # On sort de la boucle while, tout est parfait !
+                else:
+                    logging.info(f"False positive: 2 loops form adjacent holes, not an annulus. Incrementing subdivs.")
+                    current_subdivs += 1
             else:
                 logging.info(f"Topology failed (Valid: {is_valid}, Loops count: {len(loops)}). Incrementing subdivs.")
                 current_subdivs += 1
@@ -4310,6 +4318,14 @@ class OrthoMeshViewer(QMainWindow):
         self.original_faces = hole_f
         self.original_tri_types = hole_t
         self.original_tri_levels = hole_l
+
+        # debug visuel ---
+        # self.is_modified = True
+        # self.update_selection_colors()
+        # self.canvas.native.setFocus()
+        # self.update_pivot_z()
+        # return
+        # --- debug
 
         # =====================================================================
         logging.info("4/5 : CDT Triangulation...")
@@ -4448,16 +4464,32 @@ class OrthoMeshViewer(QMainWindow):
 
     def undo_zone_point(self):
         """Annule le dernier point placé sur le lasso 3D."""
-        if getattr(self, 'zone_draw_mode', False) and self.zone_polygon_points:
+        # 0.28.3
+        if self.current_flatten_phase in (FlattenPhase.PHASE_1_DRAWING, FlattenPhase.PHASE_2_CLOSED) and self.zone_polygon_points:
             point = self.zone_polygon_points.pop()
             self.zone_polygon_redo_stack.append(point)
+
+            # Si le polygone était fermé (le dernier point est le même que le 1er), on l'ouvre
+            if self.current_flatten_phase == FlattenPhase.PHASE_2_CLOSED:
+                self.set_flatten_phase(FlattenPhase.PHASE_1_DRAWING)
+            elif len(self.zone_polygon_points) == 0:
+                self.set_flatten_phase(FlattenPhase.PHASE_0_INIT)
+
             self.update_zone_polygon_visual()
 
     def redo_zone_point(self):
         """Rétablit le dernier point annulé sur le lasso 3D."""
-        if getattr(self, 'zone_draw_mode', False) and getattr(self, 'zone_polygon_redo_stack', []):
+        # 0.28.3
+        if self.current_flatten_phase in (FlattenPhase.PHASE_0_INIT, FlattenPhase.PHASE_1_DRAWING) and getattr(self, 'zone_polygon_redo_stack', []):
             point = self.zone_polygon_redo_stack.pop()
             self.zone_polygon_points.append(point)
+            is_closed = len(self.zone_polygon_points) >= 4 and (self.zone_polygon_points[0] == self.zone_polygon_points[-1])
+
+            if is_closed:
+                self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
+            elif len(self.zone_polygon_points) > 0:
+                self.set_flatten_phase(FlattenPhase.PHASE_1_DRAWING)
+
             self.update_zone_polygon_visual()
 
     def activate_flatten_mode(self):
@@ -4516,6 +4548,16 @@ class OrthoMeshViewer(QMainWindow):
             plane_color = (0.0, 1.0, 1.0, 0.5) # Cyan classique pour l'horizontal
             self._slider_center_z = mean_z
 
+            # --- 0.28.7 : Synchronisation silencieuse de l'interface ---
+            self.flatten_spinbox.blockSignals(True)
+            self.flatten_spinbox.setValue(mean_z)
+            self.flatten_spinbox.blockSignals(False)
+
+            self.flatten_slider.blockSignals(True)
+            self.flatten_slider.setValue(500)
+            self.flatten_slider.blockSignals(False)
+            # -------------------------------------------------------------
+
         self.flatten_plane_verts = np.array(verts, dtype=np.float32)
 
         faces = [[0, i, i + 1] for i in range(1, segments)]
@@ -4530,24 +4572,8 @@ class OrthoMeshViewer(QMainWindow):
             parent=self.view.scene
         )
 
-        # 0.28.0 --- Ajustement de l'UI ---
-        if is_tilted:
-            # En mode incliné, le Z global n'a plus de sens (A et B commandent)
-            self.flatten_slider.setEnabled(False)
-            self.flatten_spinbox.setEnabled(False)
-        else:
-            self.flatten_slider.setEnabled(True)
-            self.flatten_spinbox.setEnabled(True)
-
-        self.btn_apply_flatten.setEnabled(True)
-        self.btn_cancel_flatten.setEnabled(True)
-
-        self.flatten_spinbox.blockSignals(True)
-        self.flatten_slider.blockSignals(True)
-        self.flatten_spinbox.setValue(self._slider_center_z)
-        self.flatten_slider.setValue(500)
-        self.flatten_spinbox.blockSignals(False)
-        self.flatten_slider.blockSignals(False)
+        # 0.28.0, 0.28.3 --- Ajustement de l'UI ---
+        self.set_flatten_phase(FlattenPhase.PHASE_5_FLATTENING)
 
         logging.info(f"Flattening Step 2 activated. Tilted mode: {is_tilted}")
 
@@ -4577,10 +4603,9 @@ class OrthoMeshViewer(QMainWindow):
             self.update_undo_redo_buttons()
             self.update_pivot_z()
 
-        self.btn_apply_zone.setEnabled(True)
+        # 0.28.3
+        self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
         self.btn_load_zone.setEnabled(True)
-        self.btn_save_zone.setEnabled(True)
-        self.group_tilted_plane.setEnabled(True)
         self.update_zone_polygon_visual()
         self.canvas.native.setFocus()
 
@@ -4658,7 +4683,7 @@ class OrthoMeshViewer(QMainWindow):
         self.selected_faces_indices = np.where(is_plateau_face)[0].tolist()
 
         v2d = self.original_vertices[:, :2]
-        dist_verts = np.full(len(self.original_vertices), np.inf)
+        # dist_verts = np.full(len(self.original_vertices), np.inf)
 
         if trans_width > 0:
             seg_points = np.array(segments_2d).reshape(-1, 2)
@@ -4698,8 +4723,10 @@ class OrthoMeshViewer(QMainWindow):
             sel_array = np.array(self.selected_faces_indices, dtype=int)
 
             # On change le type en 8 (Route) uniquement pour les triangles de type 0 (Terrain)
-            mask_terrain = self.original_tri_types[sel_array] == 0
-            self.original_tri_types[sel_array[mask_terrain]] = 8
+            # 0.28.6 - ajout condition
+            if self.cb_apply_type_8.isChecked():
+                mask_terrain = self.original_tri_types[sel_array] == 0
+                self.original_tri_types[sel_array[mask_terrain]] = 8
 
             # On vide la sélection pour qu'elle ne soit plus affichée en orange
             self.selected_faces_indices = []
@@ -4722,6 +4749,9 @@ class OrthoMeshViewer(QMainWindow):
         self.zone_polygon_redo_stack = []
         self.current_zone_name = ""
         self.current_zone_name_input.clear()
+
+        # 0.28.6
+        self.cb_apply_type_8.setChecked(True)
 
         self.group_tilted_plane.setChecked(False)
         self.group_tilted_plane.setEnabled(False)
@@ -4774,18 +4804,32 @@ class OrthoMeshViewer(QMainWindow):
         self.current_zone_name_input.setText(name)
         if "trans_width" in sel_data:
             self.flatten_trans_input.setText(str(sel_data["trans_width"]))
-
-        # 0.28.0 - plan incliné
-        tilted_active = sel_data.get("tilted_active", False)
-        self.group_tilted_plane.setChecked(tilted_active)
-        if tilted_active and "tilted_pts" in sel_data and len(sel_data["tilted_pts"]) == 2:
-            self.tilted_pts_2d = [np.array(p, dtype=np.float32) for p in sel_data["tilted_pts"]]
-            self.btn_def_ab.setText(_("lbl_AB_restored"))
-            self.init_tilted_plane_logic()
+        # 0.28.6
+        allow_destroy_all_types = sel_data.get("allow_destroy_all_types", False)
+        self.cb_allow_destroy_all_types.setChecked(allow_destroy_all_types)
+        apply_type_8 = sel_data.get("apply_type_8", True)
+        self.cb_apply_type_8.setChecked(apply_type_8)
 
         if not self.btn_toggle_zone.isChecked():
             self.btn_toggle_zone.setChecked(True)
             self.toggle_zone_mode()
+
+        # 0.28.0 et 0.28.3 - plan incliné
+        tilted_active = sel_data.get("tilted_active", False)
+        self.group_tilted_plane.setChecked(tilted_active)
+
+        if tilted_active and "tilted_pts" in sel_data and len(sel_data["tilted_pts"]) == 2:
+            self.tilted_pts_2d = [np.array(p, dtype=np.float32) for p in sel_data["tilted_pts"]]
+            self.init_tilted_plane_logic()
+
+            self.set_flatten_phase(FlattenPhase.PHASE_4_PT_B)
+
+            self.btn_def_ab.setChecked(False)
+            self.btn_def_ab.setEnabled(False)
+            self.btn_def_ab.setStyleSheet("background-color: #34495e; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_disabled"))
+        else:
+            self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
 
         self.update_zone_polygon_visual()
         self.canvas.native.setFocus()
@@ -4814,10 +4858,15 @@ class OrthoMeshViewer(QMainWindow):
 
         # Préparation robuste de la liste pour la combobox
         items = existing_names.copy()
-        if default_name and default_name not in items:
-            items.insert(0, default_name)
+        default_index = 0
 
-        name, ok = QInputDialog.getItem(self, _("msg_save_complex_area"), _("msg_name_cust", ti=tile_id), items, 0, True)
+        if default_name:
+            if default_name in items:
+                default_index = items.index(default_name)
+            else:
+                items.insert(0, default_name)
+
+        name, ok = QInputDialog.getItem(self, _("msg_save_complex_area"), _("msg_name_cust", ti=tile_id), items, default_index, True)
 
         if not ok or not name.strip(): return
         name = name.strip()
@@ -4835,7 +4884,9 @@ class OrthoMeshViewer(QMainWindow):
             "points": native_points,
             "trans_width": self.flatten_trans_input.text(),
             "tilted_active": self.group_tilted_plane.isChecked(),
-            "tilted_pts": [pt.tolist() for pt in self.tilted_pts_2d] if self.tilted_pts_2d else []
+            "tilted_pts": [pt.tolist() for pt in self.tilted_pts_2d] if self.tilted_pts_2d else [],
+            "allow_destroy_all_types": self.cb_allow_destroy_all_types.isChecked(),
+            "apply_type_8": self.cb_apply_type_8.isChecked()
         }
 
         replaced = False
@@ -4859,17 +4910,32 @@ class OrthoMeshViewer(QMainWindow):
 
     # 0.28.0 - méthodes pour plan incliné
     def toggle_define_ab_mode(self):
-        self.tilted_define_active = self.btn_def_ab.isChecked()
-        if self.tilted_define_active:
-            self.tilted_pts_2d = []
+        # 0.28.3
+        if self.btn_def_ab.isChecked():
+            # Devient actif : Orange clignotant
+            self.btn_def_ab.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold;")
             self.btn_def_ab.setText(_("lbl_AB_ctrl"))
+            self.tilted_pts_2d = []
+            self.pulse_timer.start(500) # Assure le clignotement
+            self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
         else:
-            self.btn_def_ab.setText(_("lbl_AB_define"))
+            # Annulé par l'utilisateur : redevient Vert
+            self.btn_def_ab.setStyleSheet("background-color: #188034; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("btn_def_ab"))
+            self.tilted_pts_2d = []
+            self.clear_tilted_visuals()
+            self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
 
     def on_tilted_plane_toggled(self, checked):
         if not checked:
             self.clear_tilted_visuals()
             self.update_flatten_plane_visual() # Restaure le plateau horizontal
+
+        # 0.28.3 - Réévaluation de l'état si on était en phase 2 (Active/désactive la validation)
+        if self.current_flatten_phase in (FlattenPhase.PHASE_2_CLOSED, FlattenPhase.PHASE_3_PT_A, FlattenPhase.PHASE_4_PT_B):
+            if not checked:
+                self.btn_def_ab.setChecked(False) # Coupe le clignotement
+            self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
 
     def init_tilted_plane_logic(self):
         z_a, z_b = self.tilted_pts_2d[0][2], self.tilted_pts_2d[1][2]
@@ -5023,6 +5089,151 @@ class OrthoMeshViewer(QMainWindow):
         if getattr(self, 'temp_tilted_marker', None) is not None:
             self.temp_tilted_marker.parent = None
             self.temp_tilted_marker = None
+
+    # 0.28.3
+    def set_flatten_phase(self, phase: FlattenPhase):
+        self.current_flatten_phase = phase
+        is_tilted = self.group_tilted_plane.isChecked()
+
+        if phase == FlattenPhase.INACTIVE:
+            self.zone_draw_mode = False
+            self.group_tilted_plane.setEnabled(False)
+            self.btn_apply_zone.setEnabled(False)
+            self.btn_cancel_zone.setEnabled(False)
+            self.btn_save_zone.setEnabled(False)
+            self.btn_def_ab.setEnabled(False)
+            self.btn_apply_flatten.setEnabled(False)
+            self.btn_cancel_flatten.setEnabled(False)
+            self.flatten_slider.setEnabled(False)
+            self.flatten_spinbox.setEnabled(False)
+
+            self.btn_def_ab.setChecked(False)
+            self.btn_def_ab.setStyleSheet("background-color: #34495e; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_disabled"))
+
+        elif phase == FlattenPhase.PHASE_0_INIT:
+            self.zone_draw_mode = True
+            self.btn_apply_zone.setEnabled(False)
+            self.btn_cancel_zone.setEnabled(False)
+            self.btn_save_zone.setEnabled(False)
+            self.group_tilted_plane.setEnabled(True)
+            self.flatten_trans_input.setEnabled(True)
+
+            self.btn_def_ab.setEnabled(False)
+            self.btn_def_ab.setChecked(False)
+            self.btn_def_ab.setStyleSheet("background-color: #34495e; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_disabled"))
+
+        elif phase == FlattenPhase.PHASE_1_DRAWING:
+            self.btn_cancel_zone.setEnabled(True)
+            self.btn_apply_zone.setEnabled(False)
+
+            self.btn_def_ab.setEnabled(False)
+            self.btn_def_ab.setChecked(False)
+            self.btn_def_ab.setStyleSheet("background-color: #34495e; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_disabled"))
+
+        elif phase == FlattenPhase.PHASE_2_CLOSED:
+            self.btn_cancel_zone.setEnabled(True)
+            self.btn_save_zone.setEnabled(True)
+            if is_tilted:
+                self.btn_def_ab.setEnabled(True)
+                self.btn_apply_zone.setEnabled(False)
+
+                if not self.btn_def_ab.isChecked():
+                    self.btn_def_ab.setStyleSheet("background-color: #188034; color: white; font-weight: bold;")
+                    self.btn_def_ab.setText(_("btn_def_ab"))
+            else:
+                self.btn_def_ab.setEnabled(False)
+                self.btn_apply_zone.setEnabled(True)
+
+                self.btn_def_ab.setChecked(False)
+                self.btn_def_ab.setStyleSheet("background-color: #34495e; color: white; font-weight: bold;")
+                self.btn_def_ab.setText(_("lbl_AB_disabled"))
+
+        elif phase == FlattenPhase.PHASE_3_PT_A:
+            self.btn_apply_zone.setEnabled(False)
+            self.btn_def_ab.setEnabled(True)
+
+            self.btn_apply_zone.setEnabled(phase == FlattenPhase.PHASE_4_PT_B)
+            self.btn_def_ab.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_ctrl"))
+
+        elif phase == FlattenPhase.PHASE_4_PT_B:
+            self.btn_apply_zone.setEnabled(True)
+            self.btn_def_ab.setEnabled(True)
+
+            self.btn_apply_zone.setEnabled(phase == FlattenPhase.PHASE_4_PT_B)
+            self.btn_def_ab.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_ctrl"))
+
+        elif phase == FlattenPhase.PHASE_5_FLATTENING:
+            self.btn_apply_zone.setEnabled(False)
+            self.btn_save_zone.setEnabled(False)
+            self.btn_def_ab.setEnabled(False)
+            self.btn_def_ab.setChecked(False)
+            self.btn_def_ab.setStyleSheet("background-color: #34495e; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_disabled"))
+            self.group_tilted_plane.setEnabled(False)
+            self.btn_apply_flatten.setEnabled(True)
+            self.btn_cancel_flatten.setEnabled(True)
+            if not is_tilted:
+                self.flatten_slider.setEnabled(True)
+                self.flatten_spinbox.setEnabled(True)
+            else:
+                self.flatten_slider.setEnabled(False)
+                self.flatten_spinbox.setEnabled(False)
+
+        self.update_undo_redo_buttons()
+
+    def _add_polygon_point(self, x, y, z):
+        self.zone_polygon_points.append([x, y, z])
+        self.zone_polygon_redo_stack.clear()
+        self.set_flatten_phase(FlattenPhase.PHASE_1_DRAWING)
+        self.update_zone_polygon_visual()
+
+    def _close_polygon(self):
+        if len(self.zone_polygon_points) >= 3:
+            first_point = self.zone_polygon_points[0]
+            self.zone_polygon_points.append(first_point)
+            self.zone_polygon_redo_stack.clear()
+            self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
+            self.update_zone_polygon_visual()
+
+    def _add_tilted_point(self, x, y, z):
+        self.tilted_pts_2d.append(np.array([x, y, z]))
+        self.tilted_redo_stack.clear()
+
+        if len(self.tilted_pts_2d) == 1:
+            self.set_flatten_phase(FlattenPhase.PHASE_3_PT_A)
+            self.draw_temp_tilted_marker(x, y, z)
+        elif len(self.tilted_pts_2d) == 2:
+            self.set_flatten_phase(FlattenPhase.PHASE_4_PT_B)
+            self.clear_temp_tilted_marker()
+            self.init_tilted_plane_logic()
+
+    def undo_tilted_point(self):
+        if self.current_flatten_phase in (FlattenPhase.PHASE_3_PT_A, FlattenPhase.PHASE_4_PT_B) and self.tilted_pts_2d:
+            pt = self.tilted_pts_2d.pop()
+            self.tilted_redo_stack.append(pt)
+            if len(self.tilted_pts_2d) == 1:
+                self.set_flatten_phase(FlattenPhase.PHASE_3_PT_A)
+                self.draw_temp_tilted_marker(self.tilted_pts_2d[0][0], self.tilted_pts_2d[0][1], self.tilted_pts_2d[0][2])
+            else:
+                self.set_flatten_phase(FlattenPhase.PHASE_2_CLOSED)
+                self.clear_temp_tilted_marker()
+
+    def redo_tilted_point(self):
+        if self.current_flatten_phase in (FlattenPhase.PHASE_2_CLOSED, FlattenPhase.PHASE_3_PT_A) and self.tilted_redo_stack:
+            pt = self.tilted_redo_stack.pop()
+            self.tilted_pts_2d.append(pt)
+            if len(self.tilted_pts_2d) == 1:
+                self.set_flatten_phase(FlattenPhase.PHASE_3_PT_A)
+                self.draw_temp_tilted_marker(self.tilted_pts_2d[0][0], self.tilted_pts_2d[0][1], self.tilted_pts_2d[0][2])
+            elif len(self.tilted_pts_2d) == 2:
+                self.set_flatten_phase(FlattenPhase.PHASE_4_PT_B)
+                self.clear_temp_tilted_marker()
+                self.init_tilted_plane_logic()
 
     # --- Piste Altiport (Runway) ---
 
@@ -7176,7 +7387,17 @@ class OrthoMeshViewer(QMainWindow):
         if default_name and default_name not in existing_names:
             existing_names.insert(0, default_name)
 
-        name, ok = QInputDialog.getItem(self, _("msg_save_selection"), _("msg_name_cust", ti=tile_id), existing_names, 0, True)
+        items = existing_names.copy()
+        default_index = 0
+
+        if default_name:
+            if default_name in items:
+                default_index = items.index(default_name)
+            else:
+                items.insert(0, default_name)
+
+        name, ok = QInputDialog.getItem(self, _("msg_save_selection"), _("msg_name_cust", ti=tile_id), existing_names, default_index, True)
+
         if not ok or not name.strip(): return
         name = name.strip()
 
@@ -7742,8 +7963,6 @@ class OrthoMeshViewer(QMainWindow):
                 json.dump(data, f, indent=4, ensure_ascii=False)
 
             self.is_color_preset_modified = False
-            # self._color_apply_needs_pulse = True
-            # self.pulse_timer.start(500)
 
             QMessageBox.information(self, _("msg_success_title"), _("msg_color_preset_saved", cn=name))
         except Exception as e:
@@ -7792,8 +8011,6 @@ class OrthoMeshViewer(QMainWindow):
         self.is_color_preset_modified = False
         logging.info(f"Color adjustements loaded and applied for '{self.current_sel_name}'.")
 
-        # self._color_apply_needs_pulse = True
-        # self.pulse_timer.start(500)
         self.canvas.native.setFocus()
 
     def reset_all_retouch(self):
@@ -8639,7 +8856,7 @@ class OrthoMeshViewer(QMainWindow):
         mask_apply = (dist_to_edge <= trans_width)
 
         # --- Z-FREEZE INTELLIGENT (Talus Uniquement) ---
-        protected_verts_mask = self.get_protected_vertices_mask(bitmask_filter=19)
+        protected_verts_mask = self.get_protected_vertices_mask(bitmask_filter=self.BANK_Z_FREEZE_MASK)
         # Un sommet appartient exclusivement au talus si sa distance au bord est > 0
         is_talus_vert = (dist_to_edge > 0.0) & mask_apply
 
@@ -8721,6 +8938,10 @@ class OrthoMeshViewer(QMainWindow):
 
         if getattr(self, '_color_apply_needs_pulse', False) and hasattr(self, 'btn_apply_color'):
             self.btn_apply_color.setStyleSheet(style)
+
+        if hasattr(self, 'btn_def_ab') and self.btn_def_ab.isChecked() and self.btn_def_ab.isEnabled():
+            self.btn_def_ab.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold;")
+            self.btn_def_ab.setText(_("lbl_AB_ctrl"))
 
     def check_stop_pulse(self):
         """Arrête le timer si plus aucun outil toggle n'est actif."""
