@@ -87,7 +87,9 @@
                     16076.5654296875,
                     33.22999954223633
                 ]
-            ]
+            ],
+            "allow_destroy_all_types": true,
+            "apply_type_8": true
         }
     ]
 }
