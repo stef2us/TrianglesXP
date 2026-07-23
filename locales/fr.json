@@ -42,7 +42,7 @@
     "group_chaos_params": "Paramètres chaos",
     "lbl_oct": "Octaves :",
     "lbl_amp": "Amplitude :",
-    "lbl_scale": "Echelle :",
+    "lbl_scale": "Échelle :",
     "btn_create_pt": "Créer point",
     "btn_edit_pt": "Éditer point",
     "btn_activate_flat": "Activer Aplanissement",
@@ -73,7 +73,7 @@
     "group_point_edit": "Vertex",
     "group_flatten": "Aplanir 2",
     "group_complex_area": "Aplanir 1",
-    "group_slope_runway": "Edition de piste",
+    "group_slope_runway": "Édition de piste",
     "group_edit_pt": "Éditer le point sélectionné",
     "group_runway_lib": "Bibliothèque de Pistes",
     "dialog_select_mesh": "Sélectionner un fichier .mesh",
@@ -295,5 +295,11 @@
     "lbl_AB_disabled": "Désactivé",
     "msg_plz_define_AB": "Veuillez définir les points A et B",
     "chk_allow_destr": "Autoriser destruction tous types de triangles",
-    "chk_apply_type_8": "Conversion en type route"
+    "chk_apply_type_8": "Conversion en type route",
+    "group_zone_parms": "Paramètres",
+    "group_poly_edit": "Post-édition polygone",
+    "group_runway_parms": "Paramètres",
+    "btn_edit_poly": "Éditer",
+    "btn_insert_poly": "Insérer",
+    "btn_delete_poly": "Supprimer"
 }

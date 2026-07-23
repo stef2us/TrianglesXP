@@ -285,7 +285,7 @@
     "btn_convert_type": "⚠️ Convert to Terrain",
     "msg_no_type_to_convert": "No convertible triangle found in the current selection.",
     "msg_tri_converted": "{tris} triangles converted to terrain type",
-    "group_tilted_plane": "Tilted plane",
+    "group_tilted_plane": "Tilted surface",
     "btn_def_ab": "Enable axis trace",
     "lbl_alt_A": "Altitude point A:",
     "lbl_alt_B": "Altitude point B:",
@@ -295,5 +295,11 @@
     "lbl_AB_disabled": "Disabled",
     "msg_plz_define_AB": "Please define points A and B",
     "chk_allow_destr": "Allow to destroy any triangle type",
-    "chk_apply_type_8": "Convert to road type"
+    "chk_apply_type_8": "Convert to road type",
+    "group_zone_parms": "Surface parameters",
+    "group_poly_edit": "Polygon post-edition",
+    "group_runway_parms": "Runway parameters",
+    "btn_edit_poly": "Edit",
+    "btn_insert_poly": "Insert",
+    "btn_delete_poly": "Delete"
 }
