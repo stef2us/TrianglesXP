@@ -1,0 +1,76 @@
+{
+    "+48+002": {
+        "NW_01": {
+            "brightness": -10,
+            "contrast": 20,
+            "temp": 15,
+            "tint": 0,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "NE_09": {
+            "brightness": 0,
+            "contrast": 15,
+            "temp": 5,
+            "tint": 0,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "PS_06": {
+            "brightness": 7,
+            "contrast": 15,
+            "temp": 0,
+            "tint": 5,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "M_05": {
+            "brightness": -10,
+            "contrast": 5,
+            "temp": 10,
+            "tint": -15,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "SE_02": {
+            "brightness": -15,
+            "contrast": 10,
+            "temp": 5,
+            "tint": -20,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "W_03": {
+            "brightness": 10,
+            "contrast": 10,
+            "temp": 10,
+            "tint": -10,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "PS_08": {
+            "brightness": 0,
+            "contrast": 30,
+            "temp": 10,
+            "tint": -5,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "S_04": {
+            "brightness": -10,
+            "contrast": 0,
+            "temp": 15,
+            "tint": 0,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        }
+    }
+}

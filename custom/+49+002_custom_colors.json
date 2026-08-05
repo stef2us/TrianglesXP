@@ -1,0 +1,67 @@
+{
+    "+49+002": {
+        "Amiens_01": {
+            "brightness": 0,
+            "contrast": 5,
+            "temp": 0,
+            "tint": -10,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Nord_01c": {
+            "brightness": 0,
+            "contrast": 25,
+            "temp": 10,
+            "tint": -10,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 221
+        },
+        "Rect_NE_01b": {
+            "brightness": 0,
+            "contrast": 10,
+            "temp": 0,
+            "tint": -10,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Milieu_02": {
+            "brightness": -10,
+            "contrast": 10,
+            "temp": 10,
+            "tint": 0,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "2TN_02": {
+            "brightness": 0,
+            "contrast": 5,
+            "temp": 10,
+            "tint": -15,
+            "saturation": -10,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Bord_Est_03": {
+            "brightness": 0,
+            "contrast": 20,
+            "temp": -10,
+            "tint": -5,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Laiteux_Sud_04": {
+            "brightness": -35,
+            "contrast": 25,
+            "temp": 15,
+            "tint": 0,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        }
+    }
+}

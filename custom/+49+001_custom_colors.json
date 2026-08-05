@@ -1,0 +1,67 @@
+{
+    "+49+001": {
+        "NE_03": {
+            "brightness": 0,
+            "contrast": 25,
+            "temp": 10,
+            "tint": -10,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Sature_E_02": {
+            "brightness": 0,
+            "contrast": 10,
+            "temp": 10,
+            "tint": -20,
+            "saturation": -10,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Est_04": {
+            "brightness": -10,
+            "contrast": 10,
+            "temp": 15,
+            "tint": 0,
+            "saturation": 5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Laiteux_SE_01": {
+            "brightness": -35,
+            "contrast": 25,
+            "temp": 15,
+            "tint": 0,
+            "saturation": -5,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Ouest_05": {
+            "brightness": 10,
+            "contrast": 15,
+            "temp": 15,
+            "tint": -5,
+            "saturation": 10,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "Mer_06": {
+            "brightness": 20,
+            "contrast": 0,
+            "temp": -25,
+            "tint": -5,
+            "saturation": 0,
+            "thresh_b": 0,
+            "thresh_w": 220
+        },
+        "SE_07": {
+            "brightness": 10,
+            "contrast": 25,
+            "temp": 10,
+            "tint": 0,
+            "saturation": 10,
+            "thresh_b": 0,
+            "thresh_w": 220
+        }
+    }
+}
